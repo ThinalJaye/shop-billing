@@ -35,3 +35,11 @@ model SaleItem {
   saleId    Int
   sale      Sale    @relation(fields: [saleId], references: [id])
 }
+
+model User {
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
+  passwordHash String
+  role         String   @default("CASHIER") // "ADMIN" | "CASHIER"
+  createdAt    DateTime @default(now())
+}

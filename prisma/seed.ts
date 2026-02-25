@@ -1,15 +1,17 @@
 import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
 async function main() {
   console.log('🌱 Seeding database...');
 
-  // Clear existing products
+  // Clear existing data in correct FK order (SaleItem → Sale → Product)
+  await prisma.saleItem.deleteMany();
+  await prisma.sale.deleteMany();
   await prisma.product.deleteMany();
-  console.log('Cleared existing products');
+  console.log('Cleared existing products and sales');
 
-  // Create dummy products
   const products = await prisma.product.createMany({
     data: [
       { name: 'Rice', price: 150.0, stock: 50 },
@@ -19,10 +21,21 @@ async function main() {
       { name: 'Panadol', price: 25.0, stock: 200 },
     ],
   });
-
   console.log(`✅ Created ${products.count} products`);
-  
-  // Display the created products
+
+  // Seed default admin user (upsert so re-seeding is safe)
+  const passwordHash = await bcrypt.hash('password123', 12);
+  const admin = await prisma.user.upsert({
+    where: { username: 'admin' },
+    update: {},
+    create: {
+      username: 'admin',
+      passwordHash,
+      role: 'ADMIN',
+    },
+  });
+  console.log(`✅ Admin user ready: "${admin.username}" (role: ${admin.role})`);
+
   const allProducts = await prisma.product.findMany();
   console.table(allProducts);
 }

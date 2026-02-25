@@ -20,12 +20,22 @@ export default function POSScreen({ products }: { products: Product[] }) {
     const [cart, setCart] = useState<CartItem[]>([]);
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
+    const [checkoutError, setCheckoutError] = useState<string | null>(null);
+    // Track which cart items hit the stock limit (productId -> true)
+    const [stockWarnings, setStockWarnings] = useState<Record<number, boolean>>({});
     const searchInputRef = useRef<HTMLInputElement>(null);
 
     // Auto-focus search on load
     useEffect(() => {
         searchInputRef.current?.focus();
     }, []);
+
+    // Clear checkout error after 6 seconds
+    useEffect(() => {
+        if (!checkoutError) return;
+        const t = setTimeout(() => setCheckoutError(null), 6000);
+        return () => clearTimeout(t);
+    }, [checkoutError]);
 
     // Filter products based on search term
     const filteredProducts = useMemo(() => {
@@ -38,16 +48,26 @@ export default function POSScreen({ products }: { products: Product[] }) {
     }, [searchTerm, products]);
 
     const addToBill = (product: Product) => {
+        // Do not add if out of stock
+        if (product.stock <= 0) return;
+
         setCart((prevCart) => {
             const existingItem = prevCart.find((item) => item.product.id === product.id);
             if (existingItem) {
-                // Increment by 1 by default, user can edit later
+                const newQty = existingItem.quantity + 1;
+                // Cap at stock level
+                if (newQty > product.stock) {
+                    setStockWarnings((prev) => ({ ...prev, [product.id]: true }));
+                    return prevCart; // Don't increment beyond stock
+                }
+                setStockWarnings((prev) => ({ ...prev, [product.id]: false }));
                 return prevCart.map((item) =>
                     item.product.id === product.id
-                        ? { ...item, quantity: item.quantity + 1 }
+                        ? { ...item, quantity: newQty }
                         : item
                 );
             }
+            setStockWarnings((prev) => ({ ...prev, [product.id]: false }));
             return [...prevCart, { product, quantity: 1 }];
         });
         // Keep focus on search after adding
@@ -56,19 +76,30 @@ export default function POSScreen({ products }: { products: Product[] }) {
 
     const updateQuantity = (productId: number, newQty: string) => {
         const qty = parseFloat(newQty);
-        if (isNaN(qty) || qty < 0) return; // Allow 0 to potentially clear? Or just block invalid.
+        if (isNaN(qty) || qty < 0) return;
 
         setCart((prevCart) =>
-            prevCart.map((item) =>
-                item.product.id === productId
-                    ? { ...item, quantity: qty }
-                    : item
-            )
+            prevCart.map((item) => {
+                if (item.product.id !== productId) return item;
+                const maxStock = item.product.stock;
+                if (qty > maxStock) {
+                    // Clamp to max stock and show warning
+                    setStockWarnings((prev) => ({ ...prev, [productId]: true }));
+                    return { ...item, quantity: maxStock };
+                }
+                setStockWarnings((prev) => ({ ...prev, [productId]: false }));
+                return { ...item, quantity: qty };
+            })
         );
     };
 
     const removeFromBill = (productId: number) => {
         setCart((prevCart) => prevCart.filter((item) => item.product.id !== productId));
+        setStockWarnings((prev) => {
+            const next = { ...prev };
+            delete next[productId];
+            return next;
+        });
     };
 
     const totalAmount = cart.reduce(
@@ -78,9 +109,9 @@ export default function POSScreen({ products }: { products: Product[] }) {
 
     const handleCheckout = async () => {
         if (cart.length === 0) return;
+        setCheckoutError(null);
         setLoading(true);
         try {
-            // Prepare the payload for the new createSale action
             const saleItems = cart.map((item) => ({
                 productId: item.product.id,
                 quantity: item.quantity,
@@ -92,14 +123,16 @@ export default function POSScreen({ products }: { products: Product[] }) {
             if (result.success) {
                 setCart([]);
                 setSearchTerm('');
-                alert('Sale completed successfully!');
+                setStockWarnings({});
+                alert('✅ Sale completed successfully!');
                 searchInputRef.current?.focus();
             } else {
-                alert('Failed to complete sale: ' + (result.error || 'Unknown error'));
+                // Show backend error nicely in the UI
+                setCheckoutError(result.error || 'Failed to complete sale. Please try again.');
             }
         } catch (error) {
             console.error('Checkout error:', error);
-            alert('An expected error occurred during checkout.');
+            setCheckoutError('An unexpected error occurred during checkout. Please try again.');
         } finally {
             setLoading(false);
         }
@@ -150,38 +183,49 @@ export default function POSScreen({ products }: { products: Product[] }) {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
-                            {filteredProducts.map((product, index) => (
-                                <tr
-                                    key={product.id}
-                                    className={`hover:bg-blue-50 transition-colors duration-150 cursor-pointer ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}
-                                    onClick={() => addToBill(product)}
-                                >
-                                    <td className="px-6 py-3 font-medium text-gray-900 border-r border-gray-100">
-                                        {product.name}
-                                    </td>
-                                    <td className={`px-6 py-3 text-center font-medium border-r border-gray-100 ${product.stock < 10 ? 'text-red-600' : 'text-gray-600'}`}>
-                                        {product.stock}
-                                    </td>
-                                    <td className="px-6 py-3 text-right font-medium text-gray-900 border-r border-gray-100">
-                                        {formatCurrency(product.price)}
-                                    </td>
-                                    <td className="px-4 py-2 text-center">
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                addToBill(product);
-                                            }}
-                                            className="px-3 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-600 hover:text-white text-xs font-bold uppercase tracking-wide transition-all"
-                                        >
-                                            Add
-                                        </button>
-                                    </td>
-                                </tr>
-                            ))}
+                            {filteredProducts.map((product, index) => {
+                                const isOutOfStock = product.stock <= 0;
+                                return (
+                                    <tr
+                                        key={product.id}
+                                        className={`transition-colors duration-150 ${isOutOfStock
+                                            ? 'bg-gray-100 cursor-not-allowed opacity-60'
+                                            : `hover:bg-blue-50 cursor-pointer ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`
+                                            }`}
+                                        onClick={() => !isOutOfStock && addToBill(product)}
+                                    >
+                                        <td className="px-6 py-3 font-medium text-gray-900 border-r border-gray-100">
+                                            {product.name}
+                                        </td>
+                                        <td className={`px-6 py-3 text-center font-bold border-r border-gray-100 ${isOutOfStock ? 'text-red-600' : product.stock < 10 ? 'text-orange-500' : 'text-gray-600'}`}>
+                                            {isOutOfStock ? '0 ⚠️' : product.stock}
+                                        </td>
+                                        <td className="px-6 py-3 text-right font-medium text-gray-900 border-r border-gray-100">
+                                            {formatCurrency(product.price)}
+                                        </td>
+                                        <td className="px-4 py-2 text-center">
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    addToBill(product);
+                                                }}
+                                                disabled={isOutOfStock}
+                                                title={isOutOfStock ? 'Out of Stock' : 'Add to Bill'}
+                                                className={`px-3 py-1 rounded text-xs font-bold uppercase tracking-wide transition-all ${isOutOfStock
+                                                    ? 'bg-red-100 text-red-500 cursor-not-allowed'
+                                                    : 'bg-blue-100 text-blue-700 hover:bg-blue-600 hover:text-white'
+                                                    }`}
+                                            >
+                                                {isOutOfStock ? 'Out of Stock' : 'Add'}
+                                            </button>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
                             {filteredProducts.length === 0 && (
                                 <tr>
                                     <td colSpan={4} className="px-6 py-12 text-center text-gray-500 italic">
-                                        No products found matching "{searchTerm}"
+                                        No products found matching &quot;{searchTerm}&quot;
                                     </td>
                                 </tr>
                             )}
@@ -218,22 +262,33 @@ export default function POSScreen({ products }: { products: Product[] }) {
                         <tbody className="divide-y divide-gray-100">
                             {cart.map((item) => (
                                 <tr key={item.product.id} className="hover:bg-gray-50 transition-colors">
-                                    <td className="px-4 py-3 font-medium text-gray-900 border-r border-gray-100">
+                                    <td className="px-4 py-2 font-medium text-gray-900 border-r border-gray-100">
                                         {item.product.name}
                                     </td>
                                     <td className="px-4 py-3 text-right text-gray-600 border-r border-gray-100">
                                         {item.product.price.toFixed(2)}
                                     </td>
                                     <td className="px-2 py-2 text-center border-r border-gray-100">
-                                        <input
-                                            type="number"
-                                            min="0"
-                                            step="0.001"
-                                            className="w-20 px-2 py-1 text-center border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-bold text-gray-900 bg-gray-50"
-                                            value={item.quantity}
-                                            onChange={(e) => updateQuantity(item.product.id, e.target.value)}
-                                            onClick={(e) => (e.target as HTMLInputElement).select()}
-                                        />
+                                        <div className="flex flex-col items-center gap-0.5">
+                                            <input
+                                                type="number"
+                                                min="0"
+                                                max={item.product.stock}
+                                                step="0.001"
+                                                className={`w-20 px-2 py-1 text-center border rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-bold text-gray-900 bg-gray-50 ${stockWarnings[item.product.id]
+                                                    ? 'border-red-400 focus:ring-red-400'
+                                                    : 'border-gray-300'
+                                                    }`}
+                                                value={item.quantity}
+                                                onChange={(e) => updateQuantity(item.product.id, e.target.value)}
+                                                onClick={(e) => (e.target as HTMLInputElement).select()}
+                                            />
+                                            {stockWarnings[item.product.id] && (
+                                                <span className="text-red-500 text-[10px] font-semibold leading-tight">
+                                                    Max: {item.product.stock}
+                                                </span>
+                                            )}
+                                        </div>
                                     </td>
                                     <td className="px-4 py-3 text-right font-bold text-gray-900">
                                         {(item.product.price * item.quantity).toFixed(2)}
@@ -270,6 +325,14 @@ export default function POSScreen({ products }: { products: Product[] }) {
 
                 {/* Total & Checkout Section */}
                 <div className="p-6 bg-white border-t border-gray-200 rounded-b-lg shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
+                    {/* Checkout Error Banner */}
+                    {checkoutError && (
+                        <div className="mb-4 flex items-start gap-2 bg-red-50 border border-red-300 text-red-700 text-sm rounded-lg px-4 py-3">
+                            <span className="text-lg leading-none">⚠️</span>
+                            <span className="font-medium">{checkoutError}</span>
+                        </div>
+                    )}
+
                     <div className="flex justify-between items-end mb-6">
                         <div className="text-sm text-gray-500">
                             <p>Subtotal: {cart.length} items</p>
