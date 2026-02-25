@@ -80,6 +80,32 @@ export async function registerUser(username: string, password: string, role: str
     }
 }
 
+export async function changeUserPassword(userId: number, newPassword: string) {
+    try {
+        const session = await getSession();
+        if (!session || session.role !== 'ADMIN') {
+            return { success: false, error: 'Unauthorized. Admin access required.' };
+        }
+
+        if (!newPassword || newPassword.length < 6) {
+            return { success: false, error: 'Password must be at least 6 characters.' };
+        }
+
+        const passwordHash = await bcrypt.hash(newPassword, 12);
+
+        await prisma.user.update({
+            where: { id: userId },
+            data: { passwordHash },
+        });
+
+        revalidatePath('/admin/users');
+        return { success: true };
+    } catch (error) {
+        console.error('Change password error:', error);
+        return { success: false, error: 'Failed to update password. Please try again.' };
+    }
+}
+
 // ─────────────────────────────────────────────
 // SALE ACTIONS
 // ─────────────────────────────────────────────

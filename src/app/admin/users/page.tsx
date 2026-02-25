@@ -2,6 +2,8 @@ import { getSession } from '@/lib/auth';
 import { PrismaClient } from '@prisma/client';
 import Link from 'next/link';
 import RegisterForm from './RegisterForm';
+import ChangePasswordButton from './ChangePasswordButton';
+
 
 const prisma = new PrismaClient();
 
@@ -55,6 +57,7 @@ export default async function AdminUsersPage() {
                                     <th className="px-6 py-3 text-left">Username</th>
                                     <th className="px-6 py-3 text-center">Role</th>
                                     <th className="px-6 py-3 text-right">Joined</th>
+                                    <th className="px-6 py-3 text-right">Actions</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100">
@@ -79,6 +82,9 @@ export default async function AdminUsersPage() {
                                         </td>
                                         <td className="px-6 py-3 text-right text-gray-500 text-xs">
                                             {new Date(user.createdAt).toLocaleDateString()}
+                                        </td>
+                                        <td className="px-6 py-3 text-right">
+                                            <ChangePasswordButton userId={user.id} username={user.username} />
                                         </td>
                                     </tr>
                                 ))}
